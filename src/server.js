@@ -1,28 +1,54 @@
 import express from "express";
+import http from "http";
 import cors from "cors";
 import dotenv from "dotenv";
-import connectDB from "./config/db.js";
+import mongoose from "mongoose";
+import { Server } from "socket.io";
+
+import initializeSocket from "./config/socket.js";
+import gameRoutes from "./routes/gameRoutes.js";
 
 dotenv.config();
 
 const app = express();
+const server = http.createServer(app);
 
-// Connect to MongoDB
-connectDB();
+app.use(
+  cors({
+    origin: process.env.CLIENT_URL || "http://localhost:5173",
+    credentials: true,
+  })
+);
 
-// Middleware
-app.use(cors());
 app.use(express.json());
 
-// Test route
-app.get("/", (req, res) => {
-  res.json({
-    message: "SPS Game backend is running",
-  });
+
+app.use("/api/games", gameRoutes);
+
+const io = new Server(server, {
+  cors: {
+    origin: process.env.CLIENT_URL || "http://localhost:5173",
+    credentials: true,
+  },
 });
 
-const PORT = process.env.PORT || 5000;
+initializeSocket(io);
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+const PORT = process.env.PORT || 5002;
+
+const startServer = async () => {
+  try {
+    await mongoose.connect(process.env.MONGO_URI);
+
+    console.log("MongoDB connected successfully");
+
+    server.listen(PORT, () => {
+      console.log(`Server running on port ${PORT}`);
+    });
+  } catch (error) {
+    console.error("MongoDB connection failed:", error);
+    process.exit(1);
+  }
+};
+
+startServer();
