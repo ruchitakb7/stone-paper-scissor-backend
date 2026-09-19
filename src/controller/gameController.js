@@ -268,7 +268,7 @@ export const handleSubmitChoice = async (socket, io, data) => {
       (round) => round.roundNumber === game.currentRound
     );
 
-   
+
     if (!currentRound) {
       game.rounds.push({
         roundNumber: game.currentRound,
@@ -280,6 +280,28 @@ export const handleSubmitChoice = async (socket, io, data) => {
       });
 
       currentRound = game.rounds[game.rounds.length - 1];
+    }
+
+
+    // if (player.role === "player1") {
+    //   if (currentRound.player1Choice) {
+    //     socket.emit("game_error", {
+    //       message: "You have already submitted your choice",
+    //     });
+    //     return;
+    //   }
+
+    //   currentRound.player1Choice = choice;
+    // }
+
+    if (
+      player.role === "player2" &&
+      !currentRound.player1Choice
+    ) {
+      socket.emit("game_error", {
+        message: "Player 1 must select first",
+      });
+      return;
     }
 
     // Save the player's choice
@@ -305,13 +327,13 @@ export const handleSubmitChoice = async (socket, io, data) => {
       currentRound.player2Choice = choice;
     }
 
-    // Inform both players that one player has submitted
+
     socket.to(game.roomCode).emit("player_ready", {
       playerId,
       role: player.role,
     });
 
-    // If both players have not submitted yet, save and return
+
     if (!currentRound.player1Choice || !currentRound.player2Choice) {
       await game.save();
       return;
@@ -369,7 +391,7 @@ export const handleSubmitChoice = async (socket, io, data) => {
       player2Score: totalPlayer2Score,
     });
 
-    
+
     if (game.currentRound >= 6) {
       let finalWinner = "tie";
 
@@ -398,18 +420,92 @@ export const handleSubmitChoice = async (socket, io, data) => {
       return;
     }
 
-   
+  } catch (error) {
+    console.error("Submit choice error:", error);
+
+    socket.emit("game_error", {
+      message: "Failed to submit choice",
+    });
+  }
+};
+
+
+// Socket: Move to the next round
+export const handleNextRound = async (socket, io, data) => {
+  try {
+    const { roomCode, playerId } = data;
+
+    if (!roomCode || !playerId) {
+      socket.emit("game_error", {
+        message: "Invalid game data",
+      });
+      return;
+    }
+
+    const game = await Game.findOne({
+      roomCode: roomCode.toUpperCase(),
+    });
+
+    if (!game) {
+      socket.emit("game_error", {
+        message: "Game not found",
+      });
+      return;
+    }
+
+    if (game.status !== "playing") {
+      socket.emit("game_error", {
+        message: "Game is not currently active",
+      });
+      return;
+    }
+
+    const player = game.players.find(
+      (item) => item.playerId === playerId
+    );
+
+    if (!player) {
+      socket.emit("game_error", {
+        message: "You are not part of this game",
+      });
+      return;
+    }
+
+    const currentRound = game.rounds.find(
+      (round) => round.roundNumber === game.currentRound
+    );
+
+    // Ensure the current round has finished
+    if (
+      !currentRound ||
+      !currentRound.player1Choice ||
+      !currentRound.player2Choice ||
+      !currentRound.winner
+    ) {
+      socket.emit("game_error", {
+        message: "The current round is not completed yet",
+      });
+      return;
+    }
+
+    // Prevent moving beyond the final round
+    if (game.currentRound >= 6) {
+      return;
+    }
+
+    // Move to the next round
     game.currentRound += 1;
+
     await game.save();
 
     io.to(game.roomCode).emit("next_round", {
       round: game.currentRound,
     });
   } catch (error) {
-    console.error("Submit choice error:", error);
+    console.error("Next round error:", error);
 
     socket.emit("game_error", {
-      message: "Failed to submit choice",
+      message: "Failed to move to the next round",
     });
   }
 };

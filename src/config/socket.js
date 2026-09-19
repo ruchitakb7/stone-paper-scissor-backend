@@ -1,6 +1,6 @@
 import {
   handleJoinGame,
-  handleSubmitChoice,
+  handleSubmitChoice,handleNextRound
 } from "../controller/gameController.js";
 
 const initializeSocket = (io) => {
@@ -13,6 +13,10 @@ const initializeSocket = (io) => {
 
     socket.on("submit_choice", async (data) => {
       await handleSubmitChoice(socket, io, data);
+    });
+
+    socket.on("request_next_round", async (data) => {
+      await handleNextRound(socket, io, data);
     });
 
     socket.on("disconnect", () => {
