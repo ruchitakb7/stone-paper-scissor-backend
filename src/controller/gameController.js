@@ -1,12 +1,17 @@
+import { eq, desc, and } from "drizzle-orm";
 import crypto from "node:crypto";
-import Game from "../models/gameModel.js";
 
-// Generate a unique room code
+import { db } from "../config/postgresdb.js";
+import { games } from "../models/gameModel.js";
+import { players } from "../models/player.js";
+import { rounds } from "../models/roundModel.js";
+
+
 const generateRoomCode = () => {
   return crypto.randomBytes(3).toString("hex").toUpperCase();
 };
 
-// Create a new game
+
 export const createGame = async (req, res) => {
   try {
     const { playerName } = req.body;
@@ -22,27 +27,40 @@ export const createGame = async (req, res) => {
 
     do {
       roomCode = generateRoomCode();
-      existingGame = await Game.findOne({ roomCode });
+
+      const result = await db
+        .select()
+        .from(games)
+        .where(eq(games.roomCode, roomCode));
+
+      existingGame = result[0];
     } while (existingGame);
 
     const playerId = crypto.randomUUID();
 
-    const game = await Game.create({
-      roomCode,
-      players: [
-        {
-          playerId,
-          name: playerName.trim(),
-          role: "player1",
-        },
-      ],
-      status: "waiting",
-      currentRound: 1,
+  
+    const gameResult = await db
+      .insert(games)
+      .values({
+        roomCode,
+        status: "waiting",
+        currentRound: 1,
+      })
+      .returning();
+
+    const game = gameResult[0];
+
+  
+    await db.insert(players).values({
+      gameId: game.id,
+      playerId,
+      name: playerName.trim(),
+      role: "player1",
     });
 
     return res.status(201).json({
       message: "Game created successfully",
-      gameId: game._id,
+      gameId: game.id,
       roomCode: game.roomCode,
       playerId,
       playerRole: "player1",
@@ -56,7 +74,7 @@ export const createGame = async (req, res) => {
   }
 };
 
-// Join an existing game
+
 export const joinGame = async (req, res) => {
   try {
     const { roomCode, playerName } = req.body;
@@ -67,10 +85,19 @@ export const joinGame = async (req, res) => {
       });
     }
 
-    const game = await Game.findOne({
-      roomCode: roomCode.trim().toUpperCase(),
-      status: "waiting",
-    });
+    const normalizedRoomCode = roomCode.trim().toUpperCase();
+
+    const gameResult = await db
+      .select()
+      .from(games)
+      .where(
+        and(
+          eq(games.roomCode, normalizedRoomCode),
+          eq(games.status, "waiting")
+        )
+      );
+
+    const game = gameResult[0];
 
     if (!game) {
       return res.status(404).json({
@@ -78,7 +105,12 @@ export const joinGame = async (req, res) => {
       });
     }
 
-    if (game.players.length >= 2) {
+    const existingPlayers = await db
+      .select()
+      .from(players)
+      .where(eq(players.gameId, game.id));
+
+    if (existingPlayers.length >= 2) {
       return res.status(400).json({
         message: "Game is already full",
       });
@@ -86,19 +118,26 @@ export const joinGame = async (req, res) => {
 
     const playerId = crypto.randomUUID();
 
-    game.players.push({
+   
+    await db.insert(players).values({
+      gameId: game.id,
       playerId,
       name: playerName.trim(),
       role: "player2",
     });
 
-    game.status = "playing";
-
-    await game.save();
+  
+    await db
+      .update(games)
+      .set({
+        status: "playing",
+        updatedAt: new Date(),
+      })
+      .where(eq(games.id, game.id));
 
     return res.status(200).json({
       message: "Joined game successfully",
-      gameId: game._id,
+      gameId: game.id,
       roomCode: game.roomCode,
       playerId,
       playerRole: "player2",
@@ -112,10 +151,16 @@ export const joinGame = async (req, res) => {
   }
 };
 
-// Get one game
 export const getGameById = async (req, res) => {
   try {
-    const game = await Game.findById(req.params.gameId);
+    const gameId = Number(req.params.gameId);
+
+    const gameResult = await db
+      .select()
+      .from(games)
+      .where(eq(games.id, gameId));
+
+    const game = gameResult[0];
 
     if (!game) {
       return res.status(404).json({
@@ -123,7 +168,33 @@ export const getGameById = async (req, res) => {
       });
     }
 
-    return res.status(200).json(game);
+    const gamePlayers = await db
+      .select()
+      .from(players)
+      .where(eq(players.gameId, game.id));
+
+    const gameRounds = await db
+      .select()
+      .from(rounds)
+      .where(eq(rounds.gameId, game.id));
+
+    const formattedGame = {
+      _id: game.id,
+      roomCode: game.roomCode,
+      players: gamePlayers,
+      status: game.status,
+      currentRound: game.currentRound,
+      rounds: gameRounds,
+      winner: game.winner,
+      finalScore: {
+        player1: game.finalScorePlayer1,
+        player2: game.finalScorePlayer2,
+      },
+      createdAt: game.createdAt,
+      updatedAt: game.updatedAt,
+    };
+
+    return res.status(200).json(formattedGame);
   } catch (error) {
     console.error("Get game error:", error);
 
@@ -133,12 +204,44 @@ export const getGameById = async (req, res) => {
   }
 };
 
-// Get all games
 export const getAllGames = async (req, res) => {
   try {
-    const games = await Game.find().sort({ createdAt: -1 });
+    const allGames = await db
+      .select()
+      .from(games)
+      .orderBy(desc(games.createdAt));
 
-    return res.status(200).json(games);
+    const formattedGames = await Promise.all(
+      allGames.map(async (game) => {
+        const gamePlayers = await db
+          .select()
+          .from(players)
+          .where(eq(players.gameId, game.id));
+
+        const gameRounds = await db
+          .select()
+          .from(rounds)
+          .where(eq(rounds.gameId, game.id));
+
+        return {
+          _id: game.id,
+          roomCode: game.roomCode,
+          players: gamePlayers,
+          status: game.status,
+          currentRound: game.currentRound,
+          rounds: gameRounds,
+          winner: game.winner,
+          finalScore: {
+            player1: game.finalScorePlayer1,
+            player2: game.finalScorePlayer2,
+          },
+          createdAt: game.createdAt,
+          updatedAt: game.updatedAt,
+        };
+      })
+    );
+
+    return res.status(200).json(formattedGames);
   } catch (error) {
     console.error("Get all games error:", error);
 
@@ -148,7 +251,6 @@ export const getAllGames = async (req, res) => {
   }
 };
 
-// Socket: Join game room
 export const handleJoinGame = async (socket, io, data) => {
   try {
     const { roomCode, playerId } = data;
@@ -160,9 +262,14 @@ export const handleJoinGame = async (socket, io, data) => {
       return;
     }
 
-    const game = await Game.findOne({
-      roomCode: roomCode.toUpperCase(),
-    });
+    const normalizedRoomCode = roomCode.toUpperCase();
+
+    const gameResult = await db
+      .select()
+      .from(games)
+      .where(eq(games.roomCode, normalizedRoomCode));
+
+    const game = gameResult[0];
 
     if (!game) {
       socket.emit("game_error", {
@@ -171,9 +278,17 @@ export const handleJoinGame = async (socket, io, data) => {
       return;
     }
 
-    const player = game.players.find(
-      (item) => item.playerId === playerId
-    );
+    const playerResult = await db
+      .select()
+      .from(players)
+      .where(
+        and(
+          eq(players.gameId, game.id),
+          eq(players.playerId, playerId)
+        )
+      );
+
+    const player = playerResult[0];
 
     if (!player) {
       socket.emit("game_error", {
@@ -188,20 +303,25 @@ export const handleJoinGame = async (socket, io, data) => {
     socket.data.roomCode = game.roomCode;
     socket.data.playerRole = player.role;
 
-    const players = game.players.map((item) => ({
+    const gamePlayers = await db
+      .select()
+      .from(players)
+      .where(eq(players.gameId, game.id));
+
+    const playersData = gamePlayers.map((item) => ({
       playerId: item.playerId,
       name: item.name,
       role: item.role,
     }));
 
-    if (game.players.length === 2 && game.status === "playing") {
+    if (gamePlayers.length === 2 && game.status === "playing") {
       io.to(game.roomCode).emit("player_joined", {
-        players,
+        players: playersData,
         status: game.status,
       });
     } else {
       socket.emit("waiting_for_player", {
-        players,
+        players: playersData,
         status: game.status,
       });
     }
@@ -214,7 +334,7 @@ export const handleJoinGame = async (socket, io, data) => {
   }
 };
 
-// Socket: Submit player choice
+
 export const handleSubmitChoice = async (socket, io, data) => {
   try {
     const { roomCode, playerId, choice } = data;
@@ -228,9 +348,14 @@ export const handleSubmitChoice = async (socket, io, data) => {
       return;
     }
 
-    const game = await Game.findOne({
-      roomCode: roomCode.toUpperCase(),
-    });
+    const normalizedRoomCode = roomCode.toUpperCase();
+
+    const gameResult = await db
+      .select()
+      .from(games)
+      .where(eq(games.roomCode, normalizedRoomCode));
+
+    const game = gameResult[0];
 
     if (!game) {
       socket.emit("game_error", {
@@ -246,16 +371,29 @@ export const handleSubmitChoice = async (socket, io, data) => {
       return;
     }
 
-    if (game.players.length !== 2) {
+    const gamePlayers = await db
+      .select()
+      .from(players)
+      .where(eq(players.gameId, game.id));
+
+    if (gamePlayers.length !== 2) {
       socket.emit("game_error", {
         message: "Waiting for the second player",
       });
       return;
     }
 
-    const player = game.players.find(
-      (item) => item.playerId === playerId
-    );
+    const playerResult = await db
+      .select()
+      .from(players)
+      .where(
+        and(
+          eq(players.gameId, game.id),
+          eq(players.playerId, playerId)
+        )
+      );
+
+    const player = playerResult[0];
 
     if (!player) {
       socket.emit("game_error", {
@@ -264,36 +402,37 @@ export const handleSubmitChoice = async (socket, io, data) => {
       return;
     }
 
-    let currentRound = game.rounds.find(
-      (round) => round.roundNumber === game.currentRound
-    );
+    const roundResult = await db
+      .select()
+      .from(rounds)
+      .where(
+        and(
+          eq(rounds.gameId, game.id),
+          eq(rounds.roundNumber, game.currentRound)
+        )
+      );
 
+    let currentRound = roundResult[0];
 
+   
     if (!currentRound) {
-      game.rounds.push({
-        roundNumber: game.currentRound,
-        player1Choice: null,
-        player2Choice: null,
-        winner: null,
-        player1Score: 0,
-        player2Score: 0,
-      });
+      const newRoundResult = await db
+        .insert(rounds)
+        .values({
+          gameId: game.id,
+          roundNumber: game.currentRound,
+          player1Choice: null,
+          player2Choice: null,
+          winner: null,
+          player1Score: 0,
+          player2Score: 0,
+        })
+        .returning();
 
-      currentRound = game.rounds[game.rounds.length - 1];
+      currentRound = newRoundResult[0];
     }
 
-
-    // if (player.role === "player1") {
-    //   if (currentRound.player1Choice) {
-    //     socket.emit("game_error", {
-    //       message: "You have already submitted your choice",
-    //     });
-    //     return;
-    //   }
-
-    //   currentRound.player1Choice = choice;
-    // }
-
+   
     if (
       player.role === "player2" &&
       !currentRound.player1Choice
@@ -304,7 +443,7 @@ export const handleSubmitChoice = async (socket, io, data) => {
       return;
     }
 
-    // Save the player's choice
+  
     if (player.role === "player1") {
       if (currentRound.player1Choice) {
         socket.emit("game_error", {
@@ -312,6 +451,13 @@ export const handleSubmitChoice = async (socket, io, data) => {
         });
         return;
       }
+
+      await db
+        .update(rounds)
+        .set({
+          player1Choice: choice,
+        })
+        .where(eq(rounds.id, currentRound.id));
 
       currentRound.player1Choice = choice;
     }
@@ -324,18 +470,22 @@ export const handleSubmitChoice = async (socket, io, data) => {
         return;
       }
 
+      await db
+        .update(rounds)
+        .set({
+          player2Choice: choice,
+        })
+        .where(eq(rounds.id, currentRound.id));
+
       currentRound.player2Choice = choice;
     }
-
 
     socket.to(game.roomCode).emit("player_ready", {
       playerId,
       role: player.role,
     });
 
-
     if (!currentRound.player1Choice || !currentRound.player2Choice) {
-      await game.save();
       return;
     }
 
@@ -364,23 +514,46 @@ export const handleSubmitChoice = async (socket, io, data) => {
       player2Score = 1;
     }
 
-    currentRound.winner = winner;
-    currentRound.player1Score = player1Score;
-    currentRound.player2Score = player2Score;
+  
+    const completedRoundResult = await db
+      .update(rounds)
+      .set({
+        winner,
+        player1Score,
+        player2Score,
+      })
+      .where(eq(rounds.id, currentRound.id))
+      .returning();
 
-    const totalPlayer1Score = game.rounds.reduce(
+    currentRound = completedRoundResult[0];
+
+   
+    const allRounds = await db
+      .select()
+      .from(rounds)
+      .where(eq(rounds.gameId, game.id));
+
+    const totalPlayer1Score = allRounds.reduce(
       (total, round) => total + (round.player1Score || 0),
       0
     );
 
-    const totalPlayer2Score = game.rounds.reduce(
+    const totalPlayer2Score = allRounds.reduce(
       (total, round) => total + (round.player2Score || 0),
       0
     );
 
     const roundNumber = game.currentRound;
 
-    await game.save();
+  
+    await db
+      .update(games)
+      .set({
+        finalScorePlayer1: totalPlayer1Score,
+        finalScorePlayer2: totalPlayer2Score,
+        updatedAt: new Date(),
+      })
+      .where(eq(games.id, game.id));
 
     io.to(game.roomCode).emit("round_result", {
       round: roundNumber,
@@ -391,7 +564,6 @@ export const handleSubmitChoice = async (socket, io, data) => {
       player2Score: totalPlayer2Score,
     });
 
-
     if (game.currentRound >= 6) {
       let finalWinner = "tie";
 
@@ -401,15 +573,16 @@ export const handleSubmitChoice = async (socket, io, data) => {
         finalWinner = "player2";
       }
 
-      game.finalScore = {
-        player1: totalPlayer1Score,
-        player2: totalPlayer2Score,
-      };
-
-      game.winner = finalWinner;
-      game.status = "completed";
-
-      await game.save();
+      await db
+        .update(games)
+        .set({
+          finalScorePlayer1: totalPlayer1Score,
+          finalScorePlayer2: totalPlayer2Score,
+          winner: finalWinner,
+          status: "completed",
+          updatedAt: new Date(),
+        })
+        .where(eq(games.id, game.id));
 
       io.to(game.roomCode).emit("game_completed", {
         winner: finalWinner,
@@ -419,7 +592,6 @@ export const handleSubmitChoice = async (socket, io, data) => {
 
       return;
     }
-
   } catch (error) {
     console.error("Submit choice error:", error);
 
@@ -429,8 +601,6 @@ export const handleSubmitChoice = async (socket, io, data) => {
   }
 };
 
-
-// Socket: Move to the next round
 export const handleNextRound = async (socket, io, data) => {
   try {
     const { roomCode, playerId } = data;
@@ -442,9 +612,14 @@ export const handleNextRound = async (socket, io, data) => {
       return;
     }
 
-    const game = await Game.findOne({
-      roomCode: roomCode.toUpperCase(),
-    });
+    const normalizedRoomCode = roomCode.toUpperCase();
+
+    const gameResult = await db
+      .select()
+      .from(games)
+      .where(eq(games.roomCode, normalizedRoomCode));
+
+    const game = gameResult[0];
 
     if (!game) {
       socket.emit("game_error", {
@@ -460,9 +635,17 @@ export const handleNextRound = async (socket, io, data) => {
       return;
     }
 
-    const player = game.players.find(
-      (item) => item.playerId === playerId
-    );
+    const playerResult = await db
+      .select()
+      .from(players)
+      .where(
+        and(
+          eq(players.gameId, game.id),
+          eq(players.playerId, playerId)
+        )
+      );
+
+    const player = playerResult[0];
 
     if (!player) {
       socket.emit("game_error", {
@@ -471,11 +654,19 @@ export const handleNextRound = async (socket, io, data) => {
       return;
     }
 
-    const currentRound = game.rounds.find(
-      (round) => round.roundNumber === game.currentRound
-    );
+    const roundResult = await db
+      .select()
+      .from(rounds)
+      .where(
+        and(
+          eq(rounds.gameId, game.id),
+          eq(rounds.roundNumber, game.currentRound)
+        )
+      );
 
-    // Ensure the current round has finished
+    const currentRound = roundResult[0];
+
+ 
     if (
       !currentRound ||
       !currentRound.player1Choice ||
@@ -488,18 +679,24 @@ export const handleNextRound = async (socket, io, data) => {
       return;
     }
 
-    // Prevent moving beyond the final round
+   
     if (game.currentRound >= 6) {
       return;
     }
 
-    // Move to the next round
-    game.currentRound += 1;
+   
+    const nextRound = game.currentRound + 1;
 
-    await game.save();
+    await db
+      .update(games)
+      .set({
+        currentRound: nextRound,
+        updatedAt: new Date(),
+      })
+      .where(eq(games.id, game.id));
 
     io.to(game.roomCode).emit("next_round", {
-      round: game.currentRound,
+      round: nextRound,
     });
   } catch (error) {
     console.error("Next round error:", error);
@@ -509,3 +706,4 @@ export const handleNextRound = async (socket, io, data) => {
     });
   }
 };
+

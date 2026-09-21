@@ -1,111 +1,62 @@
+import {
+  pgTable,
+  serial,
+  integer,
+  varchar,
+  timestamp,
+  pgEnum,
+} from "drizzle-orm/pg-core";
 
-import mongoose from "mongoose";
+export const winnerEnum = pgEnum("winner", [
+  "player1",
+  "player2",
+  "tie",
+]);
 
-const roundSchema = new mongoose.Schema(
-  {
-    roundNumber: {
-      type: Number,
-      required: true,
-    },
+export const gameStatusEnum = pgEnum("game_status", [
+  "waiting",
+  "playing",
+  "completed",
+]);
 
-    player1Choice: {
-      type: String,
-      enum: ["stone", "paper", "scissors"],
-      default: null,
-    },
+export const games = pgTable("games", {
+  id: serial("id").primaryKey(),
 
-    player2Choice: {
-      type: String,
-      enum: ["stone", "paper", "scissors"],
-      default: null,
-    },
+  roomCode: varchar("roomCode", {
+    length: 255,
+  })
+    .notNull()
+    .unique(),
 
-    winner: {
-      type: String,
-      enum: ["player1", "player2", "tie", null],
-      default: null,
-    },
+  currentRound: integer("currentRound")
+    .notNull()
+    .default(1),
 
-    player1Score: {
-      type: Number,
-      default: 0,
-    },
+  finalScorePlayer1: integer("finalScorePlayer1")
+    .notNull()
+    .default(0),
 
-    player2Score: {
-      type: Number,
-      default: 0,
-    },
-  },
-  { _id: false }
-);
+  finalScorePlayer2: integer("finalScorePlayer2")
+    .notNull()
+    .default(0),
 
-const gameSchema = new mongoose.Schema(
-  {
-    roomCode: {
-      type: String,
-      required: true,
-      unique: true,
-    },
+  winner: winnerEnum("winner"),
 
-    players: [
-      {
-        playerId: {
-          type: String,
-          required: true,
-        },
+  status: gameStatusEnum("status")
+    .notNull()
+    .default("waiting"),
 
-        name: {
-          type: String,
-          required: true,
-        },
+  createdAt: timestamp("createdAt", {
+    withTimezone: true,
+    mode: "date",
+  })
+    .notNull()
+    .defaultNow(),
 
-        role: {
-          type: String,
-          enum: ["player1", "player2"],
-          required: true,
-        },
-      },
-    ],
-
-    rounds: {
-      type: [roundSchema],
-      default: [],
-    },
-
-    currentRound: {
-      type: Number,
-      default: 1,
-    },
-
-    finalScore: {
-      player1: {
-        type: Number,
-        default: 0,
-      },
-
-      player2: {
-        type: Number,
-        default: 0,
-      },
-    },
-
-    winner: {
-      type: String,
-      enum: ["player1", "player2", "tie", null],
-      default: null,
-    },
-
-    status: {
-      type: String,
-      enum: ["waiting", "playing", "completed"],
-      default: "waiting",
-    },
-  },
-  {
-    timestamps: true,
-  }
-);
-
-const Game = mongoose.model("Game", gameSchema);
-
-export default Game;
+  updatedAt: timestamp("updatedAt", {
+    withTimezone: true,
+    mode: "date",
+  })
+    .notNull()
+    .defaultNow(),
+});

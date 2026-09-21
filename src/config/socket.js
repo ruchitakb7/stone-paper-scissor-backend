@@ -1,6 +1,4 @@
-import {
-  handleJoinGame,
-  handleSubmitChoice,handleNextRound
+import {handleJoinGame,handleSubmitChoice,handleNextRound
 } from "../controller/gameController.js";
 
 const initializeSocket = (io) => {
